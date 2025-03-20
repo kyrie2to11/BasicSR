@@ -200,37 +200,71 @@ def paired_paths_from_meta_info_file(folders, keys, meta_info_file, filename_tmp
 def paired_paths_from_folder(folders, keys, filename_tmpl):
     """Generate paired paths from folders.
 
+    Supports both single data source and multiple data sources.
+
+    For a single data source, folders should be two strings:
+        [input_folder, gt_folder]
+    For multiple data sources, folders should be two lists of strings:
+        [list_of_input_folders, list_of_gt_folders]
+
     Args:
-        folders (list[str]): A list of folder path. The order of list should
-            be [input_folder, gt_folder].
-        keys (list[str]): A list of keys identifying folders. The order should
-            be in consistent with folders, e.g., ['lq', 'gt'].
-        filename_tmpl (str): Template for each filename. Note that the
-            template excludes the file extension. Usually the filename_tmpl is
-            for files in the input folder.
+        folders (list[str] or list[list[str]]): For single data source, two folder paths.
+            For multiple data sources, two lists of folder paths.
+        keys (list[str]): A list of keys identifying folders, e.g., ['lq', 'gt'].
+        filename_tmpl (str): Template for each filename (excluding file extension).
 
     Returns:
-        list[str]: Returned path list.
+        list[dict]: Returned path list.
     """
-    assert len(folders) == 2, ('The len of folders should be 2 with [input_folder, gt_folder]. '
-                               f'But got {len(folders)}')
-    assert len(keys) == 2, f'The len of keys should be 2 with [input_key, gt_key]. But got {len(keys)}'
-    input_folder, gt_folder = folders
+    assert len(folders) == 2, f'The length of folders should be 2, but got {len(folders)}'
+    assert len(keys) == 2, f'The length of keys should be 2, but got {len(keys)}'
     input_key, gt_key = keys
+    input_folder, gt_folder = folders
 
-    input_paths = list(scandir(input_folder))
-    gt_paths = list(scandir(gt_folder))
-    assert len(input_paths) == len(gt_paths), (f'{input_key} and {gt_key} datasets have different number of images: '
-                                               f'{len(input_paths)}, {len(gt_paths)}.')
-    paths = []
-    for gt_path in gt_paths:
-        basename, ext = osp.splitext(osp.basename(gt_path))
-        input_name = f'{filename_tmpl.format(basename)}{ext}'
-        input_path = osp.join(input_folder, input_name)
-        assert input_name in input_paths, f'{input_name} is not in {input_key}_paths.'
-        gt_path = osp.join(gt_folder, gt_path)
-        paths.append(dict([(f'{input_key}_path', input_path), (f'{gt_key}_path', gt_path)]))
-    return paths
+    # Single data source case: folders are strings.
+    if isinstance(input_folder, str) and isinstance(gt_folder, str):
+        # Store input file names in a set to speed up the lookup process.
+        # Sets provide fast membership testing (O(1) on average).
+        input_names = {entry for entry in scandir(input_folder)}
+        # Keep it as a list to preserve the order of the entries.
+        gt_entries = list(scandir(gt_folder))
+        assert len(gt_entries) == len(input_names), (
+            f'Mismatched counts: {len(input_names)} vs {len(gt_entries)}'
+        )
+
+        paths = []
+        for gt_entry in gt_entries:
+            gt_rel_path = gt_entry
+            basename, ext = osp.splitext(osp.basename(gt_rel_path))
+            input_name = f'{filename_tmpl.format(basename)}{ext}'
+
+            if input_name not in input_names:
+                raise ValueError(f'{input_name} missing in {input_key} folder')
+
+            # Construct and append the paths dictionary for the current pair.
+            paths.append({
+                f'{input_key}_path': osp.join(input_folder, input_name),
+                f'{gt_key}_path': osp.join(gt_folder, gt_rel_path)
+            })
+        return paths
+
+    # Multiple data source case: folders are lists of strings.
+    elif isinstance(input_folder, list) and isinstance(gt_folder, list):
+        assert len(input_folder) == len(gt_folder), (
+            f'Folder count mismatch: {len(input_folder)} vs {len(gt_folder)}'
+        )
+
+        paths = []
+        for in_folder, gt_folder in zip(input_folder, gt_folder):
+            # Recursively process each pair of subfolders.
+            sub_paths = paired_paths_from_folder(
+                [in_folder, gt_folder], keys, filename_tmpl
+            )
+            paths.extend(sub_paths)
+        return paths
+
+    else:
+        raise TypeError("Folders must be both strings or both lists of strings.")
 
 
 def paths_from_folder(folder):
